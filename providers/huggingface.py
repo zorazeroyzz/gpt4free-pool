@@ -120,6 +120,11 @@ class HuggingFace(BaseProvider):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        # 透传 one-api / OpenAI 标准参数
+        for key in ("stop", "seed", "tools", "tool_choice", "response_format",
+                     "top_p", "frequency_penalty", "presence_penalty"):
+            if key in kwargs and kwargs[key] is not None:
+                payload[key] = kwargs[key]
 
         async with aiohttp.ClientSession() as session:
             async with session.post(api_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as response:

@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  freeapi-pool:
+    build: .
+    container_name: freeapi-pool
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_KEY=${FREEAPI_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  one-api:
+    image: justsong/one-api:latest
+    container_name: one-api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - INITIAL_ROOT_TOKEN=${ONEAPI_ROOT_TOKEN:-}
+    volumes:
+      - one-api-data:/data
+    depends_on:
+      freeapi-pool:
+        condition: service_healthy
+
+volumes:
+  one-api-data:

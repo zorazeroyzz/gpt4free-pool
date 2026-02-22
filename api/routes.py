@@ -1,6 +1,7 @@
 """
 OpenAI 兼容的 API 接口
 实现 /v1/chat/completions, /v1/models 等标准端点
+兼容 one-api 上游渠道格式
 """
 
 import json
@@ -11,29 +12,45 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
 from models import MODELS, get_model, get_all_models, ALL_PROVIDERS
 from providers.base import IterListProvider
+from api.auth import OptionalAuthMiddleware
 
 
 # ============= 请求/响应 Pydantic 模型 =============
 
 class ChatMessage(BaseModel):
     role: str = "user"
-    content: str = ""
+    content: Any = ""  # str 或 list[dict]，支持多模态
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # 接受未知字段，防止 422
+
     model: str = "gpt-4o-mini"
     messages: List[ChatMessage] = []
     stream: bool = False
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: Optional[int] = 4096
     top_p: float = 1.0
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     provider: Optional[str] = None  # 可选：指定提供商
+    # one-api 可能透传的标准 OpenAI 字段
+    stop: Optional[Any] = None  # str 或 list[str]
+    seed: Optional[int] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None  # str 或 dict
+    response_format: Optional[Dict[str, Any]] = None
+    n: Optional[int] = 1
+    user: Optional[str] = None
+    logprobs: Optional[bool] = None
+    top_logprobs: Optional[int] = None
 
 
 class ChatChoice(BaseModel):
@@ -64,7 +81,7 @@ def create_api_app() -> FastAPI:
 
     api = FastAPI(
         title="FreeAPI Pool - 免费API流量池",
-        description="兼容 OpenAI API 格式的免费 AI 推理服务",
+        description="兼容 OpenAI API 格式的免费 AI 推理服务，可作为 one-api 上游渠道",
         version="1.0.0",
     )
 
@@ -75,6 +92,9 @@ def create_api_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 可选 API Key 认证（通过 API_KEY 环境变量控制）
+    api.add_middleware(OptionalAuthMiddleware)
 
     @api.get("/v1/models")
     async def list_models():
@@ -91,9 +111,9 @@ def create_api_app() -> FastAPI:
 
     @api.post("/v1/chat/completions")
     async def chat_completions(request: ChatCompletionRequest):
-        """对话补全接口 - 兼容 OpenAI 格式"""
+        """对话补全接口 - 兼容 OpenAI 格式 / one-api 上游"""
         model_name = request.model
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        messages = [m.model_dump(exclude_none=True) for m in request.messages]
 
         # 查找模型
         model_obj = get_model(model_name)
@@ -108,9 +128,15 @@ def create_api_app() -> FastAPI:
                     provider = p
                     break
             if not provider:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=404,
-                    detail=f"模型 '{model_name}' 不存在。请使用 GET /v1/models 查看可用模型列表。"
+                    content={
+                        "error": {
+                            "message": f"Model '{model_name}' not found. Use GET /v1/models to see available models.",
+                            "type": "invalid_request_error",
+                            "code": "model_not_found",
+                        }
+                    },
                 )
 
         # 如果指定了提供商
@@ -122,6 +148,25 @@ def create_api_app() -> FastAPI:
                     break
             if specific_provider:
                 provider = specific_provider
+
+        # 收集额外参数，透传给提供商
+        extra_params = {}
+        if request.stop is not None:
+            extra_params["stop"] = request.stop
+        if request.seed is not None:
+            extra_params["seed"] = request.seed
+        if request.tools is not None:
+            extra_params["tools"] = request.tools
+        if request.tool_choice is not None:
+            extra_params["tool_choice"] = request.tool_choice
+        if request.response_format is not None:
+            extra_params["response_format"] = request.response_format
+        if request.top_p != 1.0:
+            extra_params["top_p"] = request.top_p
+        if request.frequency_penalty != 0.0:
+            extra_params["frequency_penalty"] = request.frequency_penalty
+        if request.presence_penalty != 0.0:
+            extra_params["presence_penalty"] = request.presence_penalty
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
@@ -136,6 +181,7 @@ def create_api_app() -> FastAPI:
                     created=created,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
+                    **extra_params,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -153,6 +199,7 @@ def create_api_app() -> FastAPI:
                 created=created,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                **extra_params,
             )
 
     # ---- 提供商管理 API ----
@@ -221,7 +268,7 @@ def create_api_app() -> FastAPI:
     async def test_chat(request: ChatCompletionRequest):
         """测试对话接口（用于 Web UI 中的聊天测试）"""
         model_name = request.model
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        messages = [m.model_dump(exclude_none=True) for m in request.messages]
 
         model_obj = get_model(model_name)
         if model_obj:
@@ -272,19 +319,21 @@ def create_api_app() -> FastAPI:
     return api
 
 
-async def _stream_response(provider, model, messages, completion_id, created, temperature, max_tokens):
+async def _stream_response(provider, model, messages, completion_id, created, temperature, max_tokens, **kwargs):
     """流式响应生成器"""
     try:
         if isinstance(provider, IterListProvider):
             gen = provider.create_completion(
                 model=model, messages=messages, stream=True,
                 temperature=temperature, max_tokens=max_tokens,
+                **kwargs,
             )
         else:
             resolved = provider.get_model(model)
             gen = provider.create_completion(
                 model=resolved, messages=messages, stream=True,
                 temperature=temperature, max_tokens=max_tokens,
+                **kwargs,
             )
 
         async for chunk in gen:
@@ -301,7 +350,28 @@ async def _stream_response(provider, model, messages, completion_id, created, te
             }
             yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        # 发送结束标记
+        # 发送结束标记（含 usage 供 one-api 解析）
+        end_data = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
+        yield f"data: {json.dumps(end_data, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        # 优雅关闭流，避免 one-api SSE 解析失败
         end_data = {
             "id": completion_id,
             "object": "chat.completion.chunk",
@@ -316,18 +386,8 @@ async def _stream_response(provider, model, messages, completion_id, created, te
         yield f"data: {json.dumps(end_data, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    except Exception as e:
-        error_data = {
-            "error": {
-                "message": str(e),
-                "type": "server_error",
-            }
-        }
-        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
 
-
-async def _non_stream_response(provider, model, messages, completion_id, created, temperature, max_tokens):
+async def _non_stream_response(provider, model, messages, completion_id, created, temperature, max_tokens, **kwargs):
     """非流式响应"""
     try:
         content = ""
@@ -335,6 +395,7 @@ async def _non_stream_response(provider, model, messages, completion_id, created
             async for chunk in provider.create_completion(
                 model=model, messages=messages, stream=False,
                 temperature=temperature, max_tokens=max_tokens,
+                **kwargs,
             ):
                 content += chunk
         else:
@@ -342,6 +403,7 @@ async def _non_stream_response(provider, model, messages, completion_id, created
             async for chunk in provider.create_completion(
                 model=resolved, messages=messages, stream=False,
                 temperature=temperature, max_tokens=max_tokens,
+                **kwargs,
             ):
                 content += chunk
 
@@ -356,11 +418,20 @@ async def _non_stream_response(provider, model, messages, completion_id, created
                 "finish_reason": "stop",
             }],
             "usage": {
-                "prompt_tokens": sum(len(m.get("content", "")) for m in messages),
-                "completion_tokens": len(content),
-                "total_tokens": sum(len(m.get("content", "")) for m in messages) + len(content),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
             },
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"所有提供商均失败: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": f"All providers failed: {str(e)}",
+                    "type": "server_error",
+                    "code": "internal_error",
+                }
+            },
+        )
