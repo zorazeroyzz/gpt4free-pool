@@ -8,6 +8,9 @@ const API_BASE = window.location.origin;
 // ============ 页面切换 ============
 
 function switchPage(page) {
+    // 移动端：切换页面时关闭侧边栏
+    closeSidebar();
+
     // 更新导航高亮
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
@@ -35,7 +38,15 @@ function switchPage(page) {
 }
 
 function toggleSidebar() {
-    document.getElementById('sidebar').classList.toggle('open');
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('active');
+}
+
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('active');
 }
 
 // ============ 控制面板 ============
@@ -315,6 +326,9 @@ async function sendMessage() {
 
             if (assistantContent) {
                 chatHistory.push({ role: 'assistant', content: assistantContent });
+            } else {
+                bubbleContent.textContent = '未收到有效回复，请稍后重试或切换其他模型。';
+                bubbleContent.style.color = 'var(--accent-orange)';
             }
 
         } else {
@@ -331,9 +345,15 @@ async function sendMessage() {
             });
 
             const data = await res.json();
-            const content = data.content || data.choices?.[0]?.message?.content || '(无回复)';
-            bubbleContent.textContent = content;
-            chatHistory.push({ role: 'assistant', content });
+            if (data.error) {
+                const errMsg = data.content || data.error?.message || '提供商暂时不可用，请重试。';
+                bubbleContent.textContent = errMsg;
+                bubbleContent.style.color = 'var(--accent-orange)';
+            } else {
+                const content = data.content || data.choices?.[0]?.message?.content || '(无回复)';
+                bubbleContent.textContent = content;
+                chatHistory.push({ role: 'assistant', content });
+            }
         }
     } catch (e) {
         bubbleContent.textContent = `错误: ${e.message}`;

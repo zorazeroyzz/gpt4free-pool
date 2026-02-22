@@ -1055,23 +1055,23 @@ input[type="range"]::-webkit-slider-thumb {
 @media (max-width: 1024px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .quickstart { grid-template-columns: 1fr; }
-}
 
-@media (max-width: 768px) {
+    /* 平板及以下：侧边栏改为抽屉 */
     .sidebar {
         position: fixed;
         left: 0; top: 0;
         height: 100vh;
         transform: translateX(-100%);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
     }
 
     .sidebar.open { transform: translateX(0); }
     .menu-toggle { display: block; }
 
-    .stats-grid { grid-template-columns: 1fr 1fr; }
-
     .playground-layout {
         flex-direction: column;
+        height: auto;
+        min-height: calc(100vh - var(--topbar-height) - 48px);
     }
 
     .playground-sidebar {
@@ -1080,7 +1080,57 @@ input[type="range"]::-webkit-slider-thumb {
         flex-wrap: wrap;
     }
 
-    .playground-sidebar .form-group { flex: 1; min-width: 150px; }
+    .playground-sidebar .form-group { flex: 1; min-width: 140px; }
+
+    .playground-main {
+        min-height: 400px;
+        flex: 1;
+    }
+}
+
+@media (max-width: 768px) {
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+
+    .stat-card { padding: 14px; gap: 10px; }
+    .stat-value { font-size: 20px; }
+    .stat-icon { width: 40px; height: 40px; }
+
+    .page-content { padding: 16px; }
+    .topbar { padding: 0 16px; }
+
+    .playground-sidebar { flex-direction: column; }
+    .playground-sidebar .form-group { min-width: 100%; }
+
+    .chat-message { max-width: 92%; }
+
+    .model-filters { flex-wrap: wrap; }
+    .models-grid { grid-template-columns: 1fr; }
+
+    .data-table { font-size: 12px; }
+    .data-table th, .data-table td { padding: 8px 10px; }
+
+    .api-endpoint { display: none; }
+}
+
+@media (max-width: 480px) {
+    .stats-grid { grid-template-columns: 1fr; }
+    .topbar-title { font-size: 14px; }
+    .topbar { height: 50px; }
+    .provider-overview { grid-template-columns: 1fr; }
+}
+
+/* 侧边栏遮罩层 */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+    backdrop-filter: blur(2px);
+}
+
+.sidebar-overlay.active {
+    display: block;
 }
 
 /* ============ 滚动条 ============ */

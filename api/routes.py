@@ -5,9 +5,24 @@ OpenAI 兼容的 API 接口
 """
 
 import json
+import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
+
+
+# Cloudflare / 反爬 HTML 检测
+_HTML_JUNK_RE = re.compile(
+    r"<(?:div|script|html|head|body|iframe|noscript|style)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_html_junk(text: str) -> bool:
+    """检测文本是否为 Cloudflare 反爬页面或其他 HTML 垃圾"""
+    if not text:
+        return False
+    return bool(_HTML_JUNK_RE.search(text[:500]))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -312,6 +327,13 @@ def create_api_app() -> FastAPI:
                 ):
                     content += chunk
 
+            # 检测 HTML 垃圾
+            if _is_html_junk(content):
+                return JSONResponse(
+                    status_code=503,
+                    content={"content": "抱歉，当前提供商暂时不可用，请稍后重试或切换其他模型。", "model": model_name, "provider": getattr(provider, 'name', 'auto'), "error": True},
+                )
+
             return {"content": content, "model": model_name, "provider": getattr(provider, 'name', 'auto')}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -336,7 +358,17 @@ async def _stream_response(provider, model, messages, completion_id, created, te
                 **kwargs,
             )
 
+        collected = ""
+        html_detected = False
         async for chunk in gen:
+            collected += chunk
+            # 收集到一定量后检测是否为 HTML 垃圾
+            if not html_detected and len(collected) > 50:
+                if _is_html_junk(collected):
+                    html_detected = True
+            if html_detected:
+                continue  # 丢弃 HTML 垃圾内容，不发送给客户端
+
             data = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -349,6 +381,21 @@ async def _stream_response(provider, model, messages, completion_id, created, te
                 }],
             }
             yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        # 如果整个响应都是 HTML 垃圾，发送错误提示
+        if html_detected or (collected and _is_html_junk(collected)):
+            err_data = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "抱歉，当前提供商暂时不可用，请稍后重试或切换其他模型。"},
+                    "finish_reason": None,
+                }],
+            }
+            yield f"data: {json.dumps(err_data, ensure_ascii=False)}\n\n"
 
         # 发送结束标记（含 usage 供 one-api 解析）
         end_data = {
@@ -406,6 +453,19 @@ async def _non_stream_response(provider, model, messages, completion_id, created
                 **kwargs,
             ):
                 content += chunk
+
+        # 检测 HTML 垃圾（Cloudflare 反爬等）
+        if _is_html_junk(content):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": "当前提供商暂时不可用（被反爬机制拦截），请稍后重试或切换其他模型。",
+                        "type": "server_error",
+                        "code": "provider_unavailable",
+                    }
+                },
+            )
 
         return {
             "id": completion_id,
