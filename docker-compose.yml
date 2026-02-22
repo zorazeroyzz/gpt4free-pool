@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  freeapi-pool:
+    build: .
+    container_name: freeapi-pool
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
